@@ -27,6 +27,7 @@
  */
 #define BAUD_RATE                  HAL_UART_BR_57600
 #define POLL_INTERVAL               50
+#define PAYLOAD_READ_TRIES_MAX      10
 #define FIRMWARE_INFO_STRING_LENGTH 64
 
 // command opcodes and payloads
@@ -45,7 +46,7 @@ static uint8 payloadLengths[] = {
   sizeof(ibeaconParameters_t),  //SET_IBEACON_PARAMETERS
   NAME_LENGTH_MAX,              //SET_IBEACON_NAME
   0,                            //GET_FIRMWARE_INFO_STRING
-  0,                            //START
+  2,                            //START
   0,                            //STOP
 };
 #define MAX_PAYLOAD_LENGTH    NAME_LENGTH_MAX
@@ -101,7 +102,9 @@ enum
 static uint8 phase = PHASE_OPCODE;
 static uint8 remainingPayloadLength, currentPayloadLength;
 static uint8 opcode = OPCODE_NULL;
+static uint8 remainingTries;
 static uint8 payloadData[MAX_PAYLOAD_LENGTH];
+
 static uint8 firmwareInfoString[FIRMWARE_INFO_STRING_LENGTH] = "Firmware v1.0";
 
 /*********************************************************************
@@ -170,6 +173,7 @@ uint16 uartManager_ProcessEvent( uint8 task_id, uint16 events )
            send_nck();
          } else {
            remainingPayloadLength = payloadLengths[opcode];
+           remainingTries = PAYLOAD_READ_TRIES_MAX;
            if(remainingPayloadLength == 0)
            {
              execute_command();
@@ -184,11 +188,15 @@ uint16 uartManager_ProcessEvent( uint8 task_id, uint16 events )
         uint8 bytesRead = HalUARTRead(HAL_UART_PORT_1, &payloadData[currentPayloadLength], remainingPayloadLength);
         currentPayloadLength += bytesRead;
         remainingPayloadLength -= bytesRead;
-        //TODO: check if receiving the payload took too long!
-        if(remainingPayloadLength == 0)
+        if(--remainingTries == 0)
         {
-          execute_command();
-          phase = PHASE_OPCODE;
+          send_nck();
+        } else {
+          if(remainingPayloadLength == 0)
+          {
+            execute_command();
+            phase = PHASE_OPCODE;
+          }
         }
       }
 
@@ -229,7 +237,6 @@ static void execute_command()
   switch(opcode)
   {
   case OPCODE_TEST:
-    HalLedSet(HAL_LED_1, HAL_LED_MODE_TOGGLE);
     send_ack();
     break;
   case OPCODE_SET_IBEACON_PARAMETERS:

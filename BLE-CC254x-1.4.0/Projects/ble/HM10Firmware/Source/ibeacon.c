@@ -15,8 +15,6 @@
 #include "OSAL_PwrMgr.h"
 #include "OnBoard.h"
 #include "hal_led.h"
-#include "hal_key.h"
-#include "hal_lcd.h"
 #include "hal_uart.h"
 #include "gatt.h"
 #include "ll.h"
@@ -112,7 +110,7 @@ uint8 simpleBLETaskId; // Task ID for task/event processing
  */
 
 // GAP GATT Attributes
-static const uint8 simpleBLEDeviceName[GAP_DEVICE_NAME_LEN] = "wiselibBeacon";
+static const uint8 simpleBLEDeviceName[GAP_DEVICE_NAME_LEN] = "customBeacon";
 static bool isStarted = FALSE;
 
 static struct ibeaconAdvertData advertData =
@@ -146,7 +144,7 @@ static struct ibeaconScanRspData scanRspData =
   .powerLevel = 0,       // 0dBm  
   .len2 = 14,
   .type2 = GAP_ADTYPE_LOCAL_NAME_COMPLETE, 
-  .name = "wiselibBeacon"
+  .name = "customBeacon"
 };
 
 
@@ -278,6 +276,7 @@ uint16 SimpleBLECentral_ProcessEvent( uint8 task_id, uint16 events )
   /*** Init Device ***/
   if ( events & IB_INIT_DEVICE_EVT )
   {
+    HalLedBlink(HAL_LED_1, 3, 50, 1000);
     VOID GAPCentralRole_StartDevice( (gapCentralRoleCB_t *) &simpleBLERoleCB );      // start scanning
     return ( events ^ IB_INIT_DEVICE_EVT );
   }
@@ -293,6 +292,7 @@ uint16 SimpleBLECentral_ProcessEvent( uint8 task_id, uint16 events )
                                          DEFAULT_DISCOVERY_WHITE_LIST );
       uint8 advertising_enable = TRUE;
       GAPRole_SetParameter( GAPROLE_ADVERT_ENABLED, sizeof( uint8 ), &advertising_enable );
+      HalLedSet(HAL_LED_1, HAL_LED_MODE_ON);
     }
     return ( events ^ IB_START_DEVICE_EVT );
   }
@@ -306,6 +306,7 @@ uint16 SimpleBLECentral_ProcessEvent( uint8 task_id, uint16 events )
       GAPCentralRole_CancelDiscovery();
       uint8 advertising_enable = FALSE;
       GAPRole_SetParameter( GAPROLE_ADVERT_ENABLED, sizeof( uint8 ), &advertising_enable );
+      HalLedSet(HAL_LED_1, HAL_LED_MODE_OFF);
     }
     return ( events ^ IB_STOP_DEVICE_EVT );
   }
