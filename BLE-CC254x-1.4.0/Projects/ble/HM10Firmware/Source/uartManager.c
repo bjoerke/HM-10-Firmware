@@ -10,8 +10,8 @@
 #include "OSAL.h"
 #include "OSAL_PwrMgr.h"
 
-#include "OSAL_ibeacon.h"
-#include "ibeacon.h"
+#include "OSAL_centralBroadcaster.h"
+#include "centralBroadcaster.h"
 
 #include "hal_led.h"
 #include "hal_uart.h"
@@ -27,29 +27,28 @@
  */
 #define BAUD_RATE                  HAL_UART_BR_57600
 #define POLL_INTERVAL               50
-#define PAYLOAD_READ_TRIES_MAX      10
-#define FIRMWARE_INFO_STRING_LENGTH 64
+#define READ_TRIES_MAX              10
 
 // command opcodes and payloads
 #define OPCODE_NULL                     0  //invalid opcode
 #define OPCODE_TEST                     1  //just for testing - gets ACK back
-#define OPCODE_SET_IBEACON_PARAMETERS   2  //changes ibeacon parameters (uuid, minor, major)
-#define OPCODE_SET_IBEACON_NAME         3  //changes ibeacon name
-#define OPCODE_GET_FIRMWARE_INFO_STRING 4  //gets the firmware info string
+#define OPCODE_SET_ADVERTISING_DATA     2  //changes advertising data
+#define OPCODE_SET_NAME                 3  //changes ibeacon name
+#define OPCODE_GET_FIRMWARE_INFO_STRING 4  //returns the firmware info string
 #define OPCODE_START                    5  //starts scanning and advertising
 #define OPCODE_STOP                     6  //stops
 #define OPCODE_MAX                      7  //smallest invalid opcode number
-   
+
+#define PAYLOAD_LEN_UNKNOWN  0xFF
 static uint8 payloadLengths[] = {
-  0,                            //NULL
-  0,                            //TEST
-  sizeof(ibeaconParameters_t),  //SET_IBEACON_PARAMETERS
-  NAME_LENGTH_MAX,              //SET_IBEACON_NAME
-  0,                            //GET_FIRMWARE_INFO_STRING
-  2,                            //START
-  0,                            //STOP
+  0,                                              //NULL
+  0,                                              //TEST
+  PAYLOAD_LEN_UNKNOWN,                            //SET_ADVERTISING_DATA
+  PAYLOAD_LEN_UNKNOWN,                            //SET_NAME
+  0,                                              //GET_FIRMWARE_INFO_STRING
+  2,                                              //START
+  0,                                              //STOP
 };
-#define MAX_PAYLOAD_LENGTH    NAME_LENGTH_MAX
 
 // responses
 #define RESPONSE_DEVICE_FOUND          0x02  //used for sending results of device discovery
@@ -87,8 +86,8 @@ static halUARTCfg_t config =
   .baudRate = BAUD_RATE,
   .flowControl = FALSE,
   .idleTimeout = 100,
-  .rx = { .maxBufSize = 3*(MAX_PAYLOAD_LENGTH+1) },
-  .tx = { .maxBufSize = 3*(MAX_PAYLOAD_LENGTH+1) },
+  .rx = { .maxBufSize = 255 },
+  .tx = { .maxBufSize = 255 },
   .intEnable = TRUE,
   .callBackFunc = HalUARTCback
 };
@@ -96,16 +95,18 @@ static halUARTCfg_t config =
 //pahses
 enum
 {
-  PHASE_OPCODE,
-  PHASE_PAYLOAD
+  PHASE_OPCODE,  //waiting for opcode
+  PHASE_LENGTH,  //waiting for length of playload
+  PHASE_PAYLOAD  //waiting for playload data itself
 };
+
 static uint8 phase = PHASE_OPCODE;
 static uint8 remainingPayloadLength, currentPayloadLength;
-static uint8 opcode = OPCODE_NULL;
+static uint8 opcode = OPCODE_NULL, payloadLength;
 static uint8 remainingTries;
-static uint8 payloadData[MAX_PAYLOAD_LENGTH];
+static uint8 payloadData[255];
 
-static uint8 firmwareInfoString[FIRMWARE_INFO_STRING_LENGTH] = "Firmware v1.0";
+static uint8 firmwareInfoString[] = "Firmware v1.1\nInfo: https://github.com/bjoerke/HM-10-Firmware";
 
 /*********************************************************************
  * PUBLIC FUNCTIONS
@@ -163,43 +164,70 @@ uint16 uartManager_ProcessEvent( uint8 task_id, uint16 events )
   
   if ( events & UART_PERIODIC_EVT)
   {
+    if(phase != PHASE_OPCODE && --remainingTries == 0)
+    {
+      send_nck();  // took too long
+      phase = PHASE_OPCODE;
+    }
     if(Hal_UART_RxBufLen(HAL_UART_PORT_1) > 0)
     {
+      // PHASE: OPCODE
       if(phase == PHASE_OPCODE)
       {
          HalUARTRead(HAL_UART_PORT_1, &opcode, 1);
          if(opcode == OPCODE_NULL || opcode >= OPCODE_MAX)
          {
+           //invalid opcode
            send_nck();
-         } else {
-           remainingPayloadLength = payloadLengths[opcode];
-           remainingTries = PAYLOAD_READ_TRIES_MAX;
-           if(remainingPayloadLength == 0)
+         }
+         else
+         {
+           uint8 length = payloadLengths[opcode];
+           switch(length)
            {
-             execute_command();
-           } else {
-             currentPayloadLength = 0;
-             phase = PHASE_PAYLOAD;
+            case 0:
+              execute_command();
+              break;
+            case PAYLOAD_LEN_UNKNOWN:
+              phase = PHASE_LENGTH;
+              remainingTries = READ_TRIES_MAX;
+              break;
+            default:
+              phase = PHASE_PAYLOAD;
+              payloadLength = length;
+              remainingPayloadLength = length;         
+              currentPayloadLength = 0;
+              remainingTries = READ_TRIES_MAX;
+              break;
            }
          }
       }
+      
+      // PHASE: LENGTH
+      if(phase == PHASE_LENGTH)
+      {
+        if(Hal_UART_RxBufLen(HAL_UART_PORT_1) >= 1)
+        {       
+          HalUARTRead(HAL_UART_PORT_1, &payloadLength, 1);
+          remainingPayloadLength = payloadLength;         
+          currentPayloadLength = 0;
+          remainingTries = READ_TRIES_MAX;
+          phase = PHASE_PAYLOAD;
+        }
+      }
+      
+      // PHASE: PAYLOAD
       if(phase == PHASE_PAYLOAD)
       {
         uint8 bytesRead = HalUARTRead(HAL_UART_PORT_1, &payloadData[currentPayloadLength], remainingPayloadLength);
         currentPayloadLength += bytesRead;
         remainingPayloadLength -= bytesRead;
-        if(--remainingTries == 0)
+        if(remainingPayloadLength == 0)
         {
-          send_nck();
-        } else {
-          if(remainingPayloadLength == 0)
-          {
-            execute_command();
-            phase = PHASE_OPCODE;
-          }
+          execute_command();
+          phase = PHASE_OPCODE;
         }
       }
-
     }
     return ( events ^ UART_PERIODIC_EVT );
   }
@@ -218,11 +246,11 @@ static void uartManager_ProcessOSALMsg( osal_event_hdr_t *pMsg )
 {
   switch ( pMsg->event )
   {
-    case IB_MSG_DEVICE_FOUND:
+    case CB_MSG_DEVICE_FOUND:
     {
-      ibeaconDeviceFoundMsg_t* msg = (ibeaconDeviceFoundMsg_t*) pMsg;
+      deviceFoundMsg_t* msg = (deviceFoundMsg_t*) pMsg;
       msg->event = RESPONSE_DEVICE_FOUND;
-      HalUARTWrite(HAL_UART_PORT_1, (uint8*) msg, sizeof(ibeaconDeviceFoundMsg_t) );
+      HalUARTWrite(HAL_UART_PORT_1, (uint8*) msg, msg->length + sizeof(uint8) + sizeof(uint8) );
       break;
     }
   }
@@ -239,33 +267,53 @@ static void execute_command()
   case OPCODE_TEST:
     send_ack();
     break;
-  case OPCODE_SET_IBEACON_PARAMETERS:
+  case OPCODE_SET_ADVERTISING_DATA:
     {
-      ibeaconSetParametersMsg_t* msg = (ibeaconSetParametersMsg_t*) osal_msg_allocate(sizeof(ibeaconSetParametersMsg_t));
-      msg->event = IB_MSG_SET_PARAMETERS;
-      osal_memcpy(&msg->parameters, &payloadData, sizeof(ibeaconParameters_t));
+      if(payloadLength > ADVERTISING_DATA_LEN_MAX)
+      {
+        send_nck();
+        break;
+      }
+      setAdvertisingDataMsg_t* msg = (setAdvertisingDataMsg_t*) osal_msg_allocate(sizeof(setAdvertisingDataMsg_t));
+      msg->event = CB_MSG_SET_ADVERTISING_DATA;
+      msg->length = payloadLength;
+      osal_memcpy(
+                  &msg->data,
+                  &payloadData,
+                  payloadLength
+                );
       osal_msg_send(simpleBLETaskId, (uint8*) msg);
       send_ack();
       break;
     }
-  case OPCODE_SET_IBEACON_NAME:
+  case OPCODE_SET_NAME:
     {
-      ibeaconSetNameMsg_t* msg = (ibeaconSetNameMsg_t*) osal_msg_allocate(sizeof(ibeaconSetNameMsg_t));
-      msg->event = IB_MSG_SET_NAME;
-      osal_memcpy(&msg->name, &payloadData, NAME_LENGTH_MAX);
+      if(payloadLength > NAME_LENGTH_MAX)
+      {
+        send_nck();
+        break;
+      }
+      setNameMsg_t* msg = (setNameMsg_t*) osal_msg_allocate(sizeof(setNameMsg_t));
+      msg->event = CB_MSG_SET_NAME;
+      msg->length = payloadLength;
+      osal_memcpy(&msg->name, &payloadData, payloadLength);
       osal_msg_send(simpleBLETaskId, (uint8*) msg);
       send_ack();
       break;
     }      
   case OPCODE_GET_FIRMWARE_INFO_STRING:
-     HalUARTWrite(HAL_UART_PORT_1, firmwareInfoString, FIRMWARE_INFO_STRING_LENGTH);
+    {
+       uint8 length = osal_strlen((char*) firmwareInfoString);
+       HalUARTWrite(HAL_UART_PORT_1, &length, 1);
+       HalUARTWrite(HAL_UART_PORT_1, firmwareInfoString, length);
+    }
      break;
   case OPCODE_START:
-    osal_set_event( simpleBLETaskId, IB_START_DEVICE_EVT );
+    osal_set_event( simpleBLETaskId, CB_START_DEVICE_EVT );
     send_ack();
     break;
   case OPCODE_STOP:
-    osal_set_event( simpleBLETaskId, IB_STOP_DEVICE_EVT );
+    osal_set_event( simpleBLETaskId, CB_STOP_DEVICE_EVT );
     send_ack();
     break;
   }

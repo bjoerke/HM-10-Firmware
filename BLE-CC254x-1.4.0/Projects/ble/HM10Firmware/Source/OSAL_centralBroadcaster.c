@@ -9,7 +9,7 @@
 #include "hal_types.h"
 #include "OSAL.h"
 #include "OSAL_Tasks.h"
-#include "OSAL_ibeacon.h"
+#include "OSAL_centralBroadcaster.h"
 
 /* HAL */
 #include "hal_drivers.h"
@@ -42,7 +42,7 @@
 
 /* Application */
 #include "uartManager.h"
-#include "ibeacon.h"
+#include "centralBroadcaster.h"
 
 /*********************************************************************
  * GLOBAL VARIABLES

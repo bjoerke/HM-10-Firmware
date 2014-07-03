@@ -25,7 +25,7 @@
 #include "gapbondmgr.h"
 #include "simpleGATTprofile.h"
 
-#include "ibeacon.h"
+#include "centralBroadcaster.h"
 #include "uartManager.h"
 
 /*********************************************************************
@@ -64,28 +64,6 @@
 /*********************************************************************
  * TYPEDEFS
  */
-// GAP - Advertisement data:
-//   max size = 31 bytes, though this is best kept short to conserve 
-//   power while advertisting
-//   this data is broadcasted periodically
-typedef struct ibeaconAdvertData 
-{
-  uint8 len1;
-  uint8 type1;
-  uint8 flags;
-  
-  uint8 len2;
-  uint8 type2;
-  uint8 manufacturerID_lo;
-  uint8 manufacturerID_hi;
-  uint16 advertisement;
-  uint8 uuid[16];
-  uint8 major_hi;
-  uint8 major_lo;
-  uint8 minor_hi;
-  uint8 minor_lo;
-  uint8 txPower;
-}ibeaconAdvertData_t;
 // GAP - SCAN RSP data (max size = 31 bytes)
 //   this data can be requested by a central role device
 typedef struct ibeaconScanRspData
@@ -113,28 +91,11 @@ uint8 simpleBLETaskId; // Task ID for task/event processing
 static const uint8 simpleBLEDeviceName[GAP_DEVICE_NAME_LEN] = "customBeacon";
 static bool isStarted = FALSE;
 
-static struct ibeaconAdvertData advertData =
+static uint8 advertData[] =
 {
-  .len1 = 2,
-  .type1 = GAP_ADTYPE_FLAGS,
-  .flags = GAP_ADTYPE_FLAGS_BREDR_NOT_SUPPORTED | GAP_ADTYPE_FLAGS_GENERAL,
-  
-  .len2 = 26,
-  .type2 = GAP_ADTYPE_MANUFACTURER_SPECIFIC,
-  .manufacturerID_lo = LO_UINT16(APPLE_COMPANY_ID),
-  .manufacturerID_hi = HI_UINT16(APPLE_COMPANY_ID),
-  .advertisement = 0x1502,
-  .uuid = { 
-    0xEB, 0xEF, 0xD0, 0x83,  //UUID part 1
-    0x70, 0xA2, 0x47, 0xC8,  //UUID part 2
-    0x98, 0x37, 0xE7, 0xB5,  //UUID part 3
-    0x63, 0x4D, 0xF5, 0x24,  //UUID part 4
-  },
-  .major_lo = 0xBB,
-  .major_hi = 0xBB,
-  .minor_lo = 0xAA,
-  .minor_hi = 0xAA,
-  .txPower = 0x90
+  2,  //length
+  GAP_ADTYPE_FLAGS,  //type
+  GAP_ADTYPE_FLAGS_BREDR_NOT_SUPPORTED | GAP_ADTYPE_FLAGS_GENERAL  //data
 };
 
 static struct ibeaconScanRspData scanRspData =
@@ -142,17 +103,15 @@ static struct ibeaconScanRspData scanRspData =
   .len1 = 2,
   .type1 = GAP_ADTYPE_POWER_LEVEL,
   .powerLevel = 0,       // 0dBm  
-  .len2 = 14,
+  .len2 = 10,
   .type2 = GAP_ADTYPE_LOCAL_NAME_COMPLETE, 
-  .name = "customBeacon"
+  .name = "<unnamed>"
 };
 
 
 /*********************************************************************
  * LOCAL FUNCTIONS
  */
-static uint8 strnlen(uint8* str, uint8 max);
-static bool isIbeaconAdvData(uint8* advData, uint8 len);
 
 /********* Central ************/
 static void simpleBLECentralRssiCB( uint16 connHandle, int8  rssi );
@@ -240,7 +199,7 @@ void SimpleBLECentral_Init( uint8 task_id )
   GAP_SetParamValue( TGAP_LIM_DISC_SCAN, DEFAULT_SCAN_DURATION );
   GGS_SetParameter( GGS_DEVICE_NAME_ATT, GAP_DEVICE_NAME_LEN, (uint8 *) simpleBLEDeviceName );
   
-  osal_set_event( simpleBLETaskId, IB_INIT_DEVICE_EVT );  //delayed startup
+  osal_set_event( simpleBLETaskId, CB_INIT_DEVICE_EVT );  //delayed startup
 }
 
 /*********************************************************************
@@ -274,15 +233,15 @@ uint16 SimpleBLECentral_ProcessEvent( uint8 task_id, uint16 events )
   }
 
   /*** Init Device ***/
-  if ( events & IB_INIT_DEVICE_EVT )
+  if ( events & CB_INIT_DEVICE_EVT )
   {
     HalLedBlink(HAL_LED_1, 3, 50, 1000);
     VOID GAPCentralRole_StartDevice( (gapCentralRoleCB_t *) &simpleBLERoleCB );      // start scanning
-    return ( events ^ IB_INIT_DEVICE_EVT );
+    return ( events ^ CB_INIT_DEVICE_EVT );
   }
   
   /*** Start Device ***/
-  if ( events & IB_START_DEVICE_EVT )
+  if ( events & CB_START_DEVICE_EVT )
   {
     if(!isStarted)
     {
@@ -294,11 +253,11 @@ uint16 SimpleBLECentral_ProcessEvent( uint8 task_id, uint16 events )
       GAPRole_SetParameter( GAPROLE_ADVERT_ENABLED, sizeof( uint8 ), &advertising_enable );
       HalLedSet(HAL_LED_1, HAL_LED_MODE_ON);
     }
-    return ( events ^ IB_START_DEVICE_EVT );
+    return ( events ^ CB_START_DEVICE_EVT );
   }
 
   /*** Stop Device ***/
-  if ( events & IB_STOP_DEVICE_EVT )
+  if ( events & CB_STOP_DEVICE_EVT )
   {
     if(isStarted)
     {
@@ -308,7 +267,7 @@ uint16 SimpleBLECentral_ProcessEvent( uint8 task_id, uint16 events )
       GAPRole_SetParameter( GAPROLE_ADVERT_ENABLED, sizeof( uint8 ), &advertising_enable );
       HalLedSet(HAL_LED_1, HAL_LED_MODE_OFF);
     }
-    return ( events ^ IB_STOP_DEVICE_EVT );
+    return ( events ^ CB_STOP_DEVICE_EVT );
   }
   
   // Discard unknown events
@@ -331,30 +290,21 @@ static void simpleBLECentral_ProcessOSALMsg( osal_event_hdr_t *pMsg )
     case GATT_MSG_EVENT:
       break;
       
-    case IB_MSG_SET_PARAMETERS:
+    case CB_MSG_SET_ADVERTISING_DATA:
       {
-        ibeaconSetParametersMsg_t* msg = (ibeaconSetParametersMsg_t*) pMsg;
-        for(int i=0; i<16; i++)
-        {
-          advertData.uuid[i] = msg->parameters.uuid[i];
-        }
-        advertData.major_hi = HI_UINT16(msg->parameters.major);
-        advertData.major_lo = LO_UINT16(msg->parameters.major);
-        advertData.minor_hi = HI_UINT16(msg->parameters.minor);
-        advertData.minor_lo = LO_UINT16(msg->parameters.minor);
-        GAP_UpdateAdvertisingData(simpleBLETaskId, TRUE, sizeof( advertData ), (uint8*) &advertData); 
+        setAdvertisingDataMsg_t* msg = (setAdvertisingDataMsg_t*) pMsg;
+        GAP_UpdateAdvertisingData(simpleBLETaskId, TRUE, msg->length, msg->data); 
       }
       break;
-    case IB_MSG_SET_NAME:
+    case CB_MSG_SET_NAME:
       {
-        ibeaconSetNameMsg_t* msg = (ibeaconSetNameMsg_t*) pMsg;
-        uint8 len = strnlen(msg->name, NAME_LENGTH_MAX);
-        scanRspData.len2 = len + 1; //name + 1byte type
-        for(int i=0; i<len; i++)
+        setNameMsg_t* msg = (setNameMsg_t*) pMsg;
+        scanRspData.len2 = msg->length + 1; //name + 1byte type
+        for(int i=0; i<msg->length; i++)
         {
           scanRspData.name[i] = msg->name[i];
         }
-        GAP_UpdateAdvertisingData(simpleBLETaskId, FALSE, 5+len, (uint8*) &scanRspData); 
+        GAP_UpdateAdvertisingData(simpleBLETaskId, FALSE, 5+msg->length, (uint8*) &scanRspData); 
       }
       break;
   }
@@ -381,26 +331,17 @@ static void simpleBLECentralEventCB( gapCentralRoleEvent_t *pEvent )
         // notify MCU
         if(pEvent->deviceInfo.eventType != GAP_ADRPT_SCAN_RSP )
         {
-          if(isIbeaconAdvData(pEvent->deviceInfo.pEvtData, pEvent->deviceInfo.dataLen))
-          {
-            ibeaconDeviceFoundMsg_t* msg = (ibeaconDeviceFoundMsg_t*) osal_msg_allocate(sizeof(ibeaconDeviceFoundMsg_t));
-            msg->event = IB_MSG_DEVICE_FOUND;
+          deviceFoundMsg_t* msg = (deviceFoundMsg_t*) osal_msg_allocate(sizeof(deviceFoundMsg_t));
+          msg->event = CB_MSG_DEVICE_FOUND;
             
-            // copy parameters from advertisment data
-            ibeaconAdvertData_t* iad = (ibeaconAdvertData_t*) pEvent->deviceInfo.pEvtData;
-            msg->major = iad->major_lo | (iad->major_hi << 8);
-            msg->minor = iad->minor_lo | (iad->minor_hi << 8);
-            msg->txPower = -iad->txPower;
-            for(int i=0; i<IBEACON_UUID_LENGTH; i++)
-              msg->uuid[i] = iad->uuid[i];
+          // copy parameters from centralRoleEvent
+          osal_memcpy(&msg->address, &pEvent->deviceInfo.addr, B_ADDR_LEN );
+          msg->rssi = -pEvent->deviceInfo.rssi;
+          osal_memcpy(msg->advData, pEvent->deviceInfo.pEvtData, pEvent->deviceInfo.dataLen );
+          msg->length = pEvent->deviceInfo.dataLen + B_ADDR_LEN + sizeof(uint8);
             
-            // copy parameters from centralRoleEvent
-            osal_memcpy(&msg->address, &pEvent->deviceInfo.addr, B_ADDR_LEN );
-            msg->rssi = -pEvent->deviceInfo.rssi;
-            
-            // send message
-            osal_msg_send(uartManagerTaskID, (uint8*) msg);
-          }
+          // send message
+          osal_msg_send(uartManagerTaskID, (uint8*) msg);
         }
       }
       break;
@@ -417,47 +358,6 @@ static void simpleBLECentralEventCB( gapCentralRoleEvent_t *pEvent )
     default:
       break;
   }
-}
-
-static uint8 strnlen(uint8* str, uint8 max)
-{
-  for(int i=0; i<max; i++)
-  {
-    if(str[i] == '\0') return i;
-  }
-  return max;
-}
-
-/*********************************************************************
- * @fn      isIbeaconAdvData
- *
- * @brief   checks if advertisement data is a valid ibeacon adv. data
- *
- * @param   advData - advertisement data to check
- * @param   len - length of adv. data
- *
- * @return  true if data is valid iBeacon advertisment data
- */
-static bool isIbeaconAdvData(uint8* advData, uint8 len)
-{
-  //check length
-  if(len < sizeof(ibeaconAdvertData_t) ) return FALSE;
-
-  //check data fields  
-  ibeaconAdvertData_t* iad = (ibeaconAdvertData_t*) advData;
-  if( iad->len1 != 2 &&
-     iad->type1 != GAP_ADTYPE_FLAGS && 
-     iad->flags != GAP_ADTYPE_FLAGS_BREDR_NOT_SUPPORTED | GAP_ADTYPE_FLAGS_GENERAL)
-  return false;
-
-  if(iad->len2              != 26 &&
-     iad->type2             != GAP_ADTYPE_MANUFACTURER_SPECIFIC &&
-     iad->manufacturerID_lo != LO_UINT16(APPLE_COMPANY_ID) &&
-     iad->manufacturerID_hi != HI_UINT16(APPLE_COMPANY_ID) &&
-     iad->advertisement     != 0x1502)
-  return false;
-  
-  return true;
 }
 
 /*********************************************************************

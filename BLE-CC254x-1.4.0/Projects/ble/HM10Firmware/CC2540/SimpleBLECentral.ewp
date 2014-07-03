@@ -736,11 +736,11 @@
         <debug>1</debug>
         <option>
           <name>XOutOverride</name>
-          <state>0</state>
+          <state>1</state>
         </option>
         <option>
           <name>OutputFile</name>
-          <state>SimpleBLECentral.d51</state>
+          <state>HM10Firmware.d51</state>
         </option>
         <option>
           <name>OutputFormat</name>
@@ -942,7 +942,7 @@
         </option>
         <option>
           <name>ExtraOutputFile</name>
-          <state>SimpleBLECentral.hex</state>
+          <state>HM10Firmware.hex</state>
         </option>
         <option>
           <name>ExtraOutputFormat</name>
@@ -1087,16 +1087,19 @@
   <group>
     <name>APP</name>
     <file>
-      <name>$PROJ_DIR$\..\Source\ibeacon.c</name>
+      <name>$PROJ_DIR$\..\Source\centralBroadcaster.c</name>
     </file>
     <file>
-      <name>$PROJ_DIR$\..\Source\ibeacon.h</name>
+      <name>$PROJ_DIR$\..\Source\centralBroadcaster.h</name>
     </file>
     <file>
-      <name>$PROJ_DIR$\..\Source\ibeacon_Main.c</name>
+      <name>$PROJ_DIR$\..\Source\centralBroadcaster_Main.c</name>
     </file>
     <file>
-      <name>$PROJ_DIR$\..\Source\OSAL_ibeacon.c</name>
+      <name>$PROJ_DIR$\..\Source\OSAL_centralBroadcaster.c</name>
+    </file>
+    <file>
+      <name>$PROJ_DIR$\..\Source\OSAL_centralBroadcaster.h</name>
     </file>
     <file>
       <name>$PROJ_DIR$\..\Source\uartManager.c</name>
