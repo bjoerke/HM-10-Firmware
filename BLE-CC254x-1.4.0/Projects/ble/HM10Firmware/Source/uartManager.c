@@ -25,7 +25,7 @@
 /*********************************************************************
  * CONSTANTS
  */
-#define BAUD_RATE                  HAL_UART_BR_57600
+#define BAUD_RATE                  HAL_UART_BR_9600
 #define POLL_INTERVAL               50
 #define READ_TRIES_MAX              10
 

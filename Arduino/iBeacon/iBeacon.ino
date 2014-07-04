@@ -78,7 +78,7 @@ void setup()
   for(int i=0; i<16; i++) advertData.uuid[i] = i;
   
   Serial.begin(9600);
-  ble.begin(57600);
+  ble.begin(9600);
   Serial.println("\nSend commands to shield via Serial\nExample: type G and then B\n");
 }
  
